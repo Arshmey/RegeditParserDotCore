@@ -1,140 +1,359 @@
-namespace RegeditParser
+using System.Diagnostics;
+using System.Globalization;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Xml.Linq;
+
+namespace RegeditParserDotCore
 {
-
-    // 1) wheare is the parser class?
-    // 2) what the structure of parsed data?
-
-    //[keyPath]
-    //"value1"="value1data"
-    //"value2"=dword:"0x11212"
-
-    // RegData regData = parser.Parse("bla.reg");
-    // foreach(RegKey key in regData.Keys)
-    // {
-    //   foreach(RegValue val in key.Values)
-    //   {
-    //     Console.WriteLine(val.type);
-    //   }
-    // }
-
-    struct RegFile
+    enum RegType
     {
-        public string name;
-        public string type;
-        public object data;
+        RG_STRING,
+        RG_MULTISTRING,
+        RG_EXTENDEDSTRING,
+        RG_DWORD,
+        RG_QWORD,
+        RG_BINARY
+    }
 
-        public RegFile(string name, string type, object data)
+    abstract class RegValueBase
+    {
+        public abstract RegType Type { get; }
+
+        public abstract byte[] BinValue { get; set; }
+    }
+
+    abstract class RegValueBaseGeneric<T> : RegValueBase
+    {
+        public abstract T Value { get; set; }
+
+    }
+
+    class RegValueString : RegValueBaseGeneric<string>
+    {
+
+        public override RegType Type { get => RegType.RG_STRING; }
+
+        public override string Value { get; set; }
+
+        public override byte[] BinValue
         {
-            this.name = name;
-            this.type = type;
-            this.data = data;
+            get => Encoding.ASCII.GetBytes(Value);
+            set => Value = Encoding.ASCII.GetString(value);
+        }
+       
+    }
+
+    class RegValueMultiString : RegValueBaseGeneric<string>//hex(7)
+    {
+        public override RegType Type { get => RegType.RG_MULTISTRING; }
+
+        public override string Value { get; set; }
+
+        public override byte[] BinValue
+        {
+            get => Encoding.ASCII.GetBytes(Value);
+            set => Value = Encoding.ASCII.GetString(value);
+        }
+ 
+    }
+
+    class RegValueExtendedString : RegValueBaseGeneric<string>//hex(2)
+    {
+        public override RegType Type { get => RegType.RG_EXTENDEDSTRING; }
+        public override string Value { get; set; }
+
+        public override byte[] BinValue
+        {
+            get => Encoding.ASCII.GetBytes(Value);
+            set => Value = Encoding.ASCII.GetString(value);
         }
     }
 
-    struct RegFolder
+    class RegValueDword : RegValueBaseGeneric<uint>
     {
-        public string keyPath;
-        public List<RegFile> RegFile;
+        public override RegType Type { get => RegType.RG_DWORD; }
 
-        public RegFolder(string keyPath)
+        public override uint Value { get; set; }
+
+        public override byte[] BinValue
         {
-            this.keyPath = keyPath;
-            RegFile = new List<RegFile>();
+            get => BitConverter.GetBytes(Value);
+            set => Value = BitConverter.ToUInt32(value);
         }
+
+    }
+
+    class RegValueQword : RegValueBaseGeneric<ulong>
+    {
+        public override RegType Type { get => RegType.RG_DWORD; }
+
+        public override ulong Value { get; set; }
+
+        public override byte[] BinValue
+        {
+            get => BitConverter.GetBytes(Value);
+            set => Value = BitConverter.ToUInt64(value);
+        }
+    }
+
+    class RegValueBinary : RegValueBaseGeneric<byte[]>
+    {
+        public override RegType Type { get => RegType.RG_BINARY; }
+
+        public override byte[] Value { get; set; }
+
+        public override byte[] BinValue
+        {
+            get => Value;
+            set => Value = value;
+        }
+
+    }
+
+    class RegValuesList : Dictionary<string, RegValueBase>
+    {
+        public RegValuesList() : base(StringComparer.InvariantCultureIgnoreCase) { }
+    }
+
+    class RegKeysList : Dictionary<string, RegValuesList>
+    {
+        public RegKeysList() : base(StringComparer.InvariantCultureIgnoreCase) { }
     }
 
     class Parser
     {
         public Parser() { }
 
-        public List<RegFolder> Parse(string text)
+        public string GetEscapedString(string str, char endChar = '\n')
         {
-            List<RegFolder> lines = new List<RegFolder>();
-
-            using (Stream st = File.OpenRead(text))
-            using (StreamReader sr = new StreamReader(st))
+            int subStrStart = 0;
+            int subStrEnd = -1;
+            if (str.StartsWith('"'))
             {
-                int nextFileData = 0;
-                int semicolon;
-                int singCount;
-                bool enterKeyReg = false;
-                string[] splitLine;
+                subStrStart = 1;
 
-                for (string? line = string.Empty; line != null; line = sr.ReadLine())
+                for (int i = 1; i < str.Length; i++)
                 {
-                    // parsing code 
-                    if ((line.StartsWith("[HKEY") && line.EndsWith("]")) && !enterKeyReg)
+                    if (str[i] == '\\')
                     {
-                        lines.Add(new RegFolder(line));
-                        enterKeyReg = true;
+                        i++;
+                        continue;
                     }
-                    else if (!string.IsNullOrWhiteSpace(line) && enterKeyReg)
+                    else if (str[i] == '"')
                     {
-                        try
-                        {
-                            semicolon = 0;
-                            singCount = -1;
-                            if (!line.StartsWith("@"))
-                            {
-                                foreach (char sing in line)
-                                {
-                                    singCount++;
-                                    if (sing == '"')
-                                    {
-                                        semicolon++;
-                                    }
-                                    if (semicolon == 2)
-                                    {
-                                        char c_1 = line[singCount];
-                                        char c_2 = line[singCount + 1];
-                                        char c_3 = line[singCount + 2];
-
-                                        if ((c_1 == '"' && c_2 == '=' && c_3 == '"') || (c_1 == '"' && c_2 == '=' && (c_3 == 'd' || c_3 == 'q' || c_3 == 'h')))
-                                        {
-                                            splitLine = line.Split(new string[] { "\"=" }, StringSplitOptions.None);
-                                            lines[nextFileData].RegFile.Add(new RegFile(splitLine[0], "REG_SZ", splitLine[1]));
-
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                splitLine = line.Split(new string[] { "=" }, StringSplitOptions.None);
-                                lines[nextFileData].RegFile.Add(new RegFile(splitLine[0], "REG_SZ", splitLine[1]));
-                            }
-                        }
-                        catch
-                        {
-                            continue;
-                        }
-                    }
-                    else if (string.IsNullOrWhiteSpace(line) && enterKeyReg)
-                    {
-                        if (!lines[nextFileData].RegFile.Any()) { lines[nextFileData].RegFile.Add(new RegFile("(Default)", "REG_SZ", "(value not set)")); }
-                        nextFileData++;
-                        enterKeyReg = false;
+                        subStrEnd = i - 1;
+                        break;
                     }
                 }
             }
+            else
+            {
+                subStrEnd = str.IndexOf(endChar);
+            }
 
-            return lines;
+            if (subStrEnd < 0)
+            {
+                return str;
+            }
+            else
+            {
+                return str.Substring(subStrStart, subStrEnd);
+            }
         }
-    }
 
-    class Program
-    {
-        static void Main(string[] args)
+        public RegKeysList Parse(Stream stream)
         {
-            Parser parser = new Parser();
-            List<RegFolder> reg = parser.Parse(@"Software.reg");
-            //List<RegFolder> reg = parser.Parse(@"hard_test.reg");
+            RegKeysList result = new RegKeysList();
+            using (StreamReader reader = new StreamReader(stream))
+            {
+                string magic = reader.ReadLine();
+                if (magic != @"Windows Registry Editor Version 5.00")
+                {
+                    throw new ArgumentException();
+                }
 
-            Console.WriteLine("Key path>: " + reg[1].keyPath);
-            Console.WriteLine(reg[1].RegFile[0].name + " | " + reg[1].RegFile[0].type + " | " + reg[1].RegFile[0].data);
+                string currentKey = null;
 
-            Console.ReadKey();
+                for (string line = reader.ReadLine(); line != null; line = reader.ReadLine())
+                {
+                    // check how windows work with keys starting from spaces
+                    line.Trim();
+                    // skip empty strings
+                    if (string.IsNullOrWhiteSpace(line))
+                    {
+                        continue;
+                    }
+                    // skip comments
+                    if (line.StartsWith(';'))
+                    {
+                        continue;
+                    }
+
+                    // parsing code 
+                    if (line.StartsWith('[') && line.EndsWith(']'))
+                    {
+                        currentKey = line.Substring(1, line.Length - 2);
+                        if (!result.TryAdd(currentKey, new RegValuesList()))
+                        {
+                            Console.WriteLine($"Warning, repeating key definition found for key {currentKey}");
+                        }
+                    }
+                    else
+                    {
+                        Debug.Assert(currentKey != null, "Value before defining the key");
+
+                        string name = GetEscapedString(line, '=');
+                        string val = line.Substring(line[0] == '"' ? name.Length + 2 : name.Length);
+
+                        Debug.Assert(val[0] == '=');
+                        val = val.Substring(1);
+
+                        if (val.StartsWith('"'))
+                        {
+                            bool flag = false;
+                            for (int i = 1; i < val.Length; i++)
+                            {
+                                if (val[i] == '\\')
+                                {
+                                    i++;
+                                    continue;
+                                }
+                                else if (val[i] == '"')
+                                {
+                                    flag = true;
+                                    break;
+                                }
+                            }
+
+                            if (!flag)
+                            {
+                                for (string hexLine = reader.ReadLine(); hexLine != null; hexLine = reader.ReadLine())
+                                {
+                                    for (int i = 1; i < hexLine.Length; i++)
+                                    {
+                                        if (hexLine[i] == '\\')
+                                        {
+                                            i++;
+                                            continue;
+                                        }
+                                        else if (hexLine[i] == '"')
+                                        {
+                                            flag = true;
+                                            break;
+                                        }
+                                    }
+
+                                    val += hexLine;
+
+                                    if (flag)
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            result[currentKey].Add(name, new RegValueString() { Value = val });
+                        }
+                        else if (val.StartsWith("dword:"))
+                        {
+                            val = val.Substring(6);
+
+                            result[currentKey].Add(name, new RegValueDword() { Value = uint.Parse(val, NumberStyles.HexNumber) });
+                        }
+                        else if (val.StartsWith("qword:"))
+                        {
+                            val = val.Substring(6);
+
+                            result[currentKey].Add(name, new RegValueQword() { Value = ulong.Parse(val, NumberStyles.HexNumber) });
+                        }
+                        else if (val.StartsWith("hex"))
+                        {
+                                
+                            if (val.EndsWith('\\'))
+                            {
+                                val = val.Substring(0, val.Length - 1);
+                                for (string hexLine = reader.ReadLine(); hexLine != null; hexLine = reader.ReadLine())
+                                {
+                                    hexLine.Trim();
+
+                                    if (hexLine.EndsWith('\\'))
+                                    {
+                                        val += hexLine.Substring(0, hexLine.Length - 1);
+                                    }
+                                    else
+                                    {
+                                        val += hexLine;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            RegValueBase hexVal;
+
+                            if (val.StartsWith("hex:"))
+                            {
+                                val = val.Substring(4);
+                                hexVal = new RegValueBinary();
+                            }
+                            else if (val.StartsWith("hex(0):"))
+                            {
+                                val = val.Substring(7);
+                                hexVal = new RegValueBinary();
+                            }
+                            else if (val.StartsWith("hex(2):"))
+                            {
+                                val = val.Substring(7);
+                                hexVal = new RegValueMultiString();
+                            }
+                            else if (val.StartsWith("hex(7):"))
+                            {
+                                val = val.Substring(7);
+                                hexVal = new RegValueExtendedString();
+                            }
+                            else if (val.StartsWith("hex(b):"))
+                            {
+                                val = val.Substring(7);
+                                hexVal = new RegValueQword();
+                            }
+                            else
+                            {
+                                hexVal = null;
+                                Debug.Assert(false, "Hex is not correct");
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(val))
+                            {
+                                string[] hex = val.Split(',');
+                                byte[] array = new byte[hex.Length];
+
+                                for (int i = 0; i < hex.Length; i++)
+                                {
+                                    array[i] = byte.Parse(hex[i], NumberStyles.HexNumber);
+                                }
+
+                                hexVal.BinValue = array;
+                            }
+                            
+                            result[currentKey].Add(name, hexVal);
+                        }
+                        else
+                        {
+                            throw new Exception("Unknown value type");
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+        class Program
+        {
+            static void Main(string[] args)
+            {
+                Parser p = new Parser();
+                Dictionary<string, RegValuesList> test = p.Parse(File.OpenRead(@"TEST.reg"));
+
+            }
         }
     }
 }
